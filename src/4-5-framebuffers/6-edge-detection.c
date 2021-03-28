@@ -44,7 +44,10 @@ void create_offscreen_pass(int width, int height) {
         .render_target = true,
         .width = width,
         .height = height,
-        .pixel_format = SG_PIXELFORMAT_RGBA8, 
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        /* Webgl 1.0 does not support repeat for textures that are not a power of two in size */
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
         .min_filter = SG_FILTER_LINEAR,
         .mag_filter = SG_FILTER_LINEAR,
         .label = "color-image"
@@ -69,11 +72,6 @@ void create_offscreen_pass(int width, int height) {
 
 static void init(void) {
     lopgl_setup();
-
-    if (sapp_gles2()) {
-        /* this demo needs GLES3/WebGL, the offscreen framebuffer/texture is not a power of 2 */
-        return;
-    }
 
     /* a render pass with one color- and one depth-attachment image */
     create_offscreen_pass(sapp_width(), sapp_height());
@@ -236,12 +234,6 @@ static void init(void) {
 }
 
 void frame(void) {
-    /* can't do anything useful on GLES2/WebGL */
-    if (sapp_gles2()) {
-        lopgl_render_gles2_fallback();
-        return;
-    }
-
     lopgl_update();
 
     hmm_mat4 view = lopgl_view_matrix();
@@ -278,6 +270,13 @@ void frame(void) {
     sg_begin_default_pass(&state.display.pass_action, sapp_width(), sapp_height());
     sg_apply_pipeline(state.display.pip);
     sg_apply_bindings(&state.display.bind);
+
+    /* offset should scale with dimensions of offscreen framebuffer */
+    fs_params_t fs_params = {
+        .offset = HMM_Vec2(2.f / sapp_width(), 2.f / sapp_height())
+    };
+    sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_fs_params, &fs_params, sizeof(fs_params));
+
     sg_draw(0, 6, 1);
 
     lopgl_render_help();
@@ -308,6 +307,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .event_cb = event,
         .width = 800,
         .height = 600,
+        .gl_force_gles2 = true,
         .window_title = "Edge Detection (LearnOpenGL)",
     };
 }

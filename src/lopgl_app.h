@@ -14,12 +14,53 @@
         - improve structure and add/update documentation
         - add support for obj's with multiple materials
         - add define to select functionality and reduce binary size
+        - use get/set to configure cameras
 */
+
+typedef struct lopgl_orbital_cam_desc {
+    hmm_vec3 target; 
+    hmm_vec3 up;
+    float pitch;
+    float heading;
+    float distance;
+    // camera limits
+    float min_pitch;
+	float max_pitch;
+	float min_dist;
+	float max_dist;
+    // control options
+    float rotate_speed;
+	float zoom_speed;
+} lopgl_orbital_cam_desc_t;
+
+typedef struct lopgl_fp_cam_desc {
+    hmm_vec3 position;
+    hmm_vec3 world_up;
+    float yaw;
+    float pitch;
+    float zoom;
+    // limits
+    float min_pitch;
+	float max_pitch;
+	float min_zoom;
+	float max_zoom;
+    // control options
+    float movement_speed;
+    float aim_speed;
+    float zoom_speed;
+} lopgl_fp_cam_desc_t;
 
 /* response fail callback function signature */
 typedef void(*lopgl_fail_callback_t)();
 
-typedef void(*lopgl_obj_request_callback_t)(fastObjMesh*);
+typedef struct lopgl_obj_response_t {
+    uint32_t _start_canary;
+    fastObjMesh* mesh; 
+    void* user_data_ptr;
+    uint32_t _end_canary;
+} lopgl_obj_response_t;
+
+typedef void(*lopgl_obj_request_callback_t)(lopgl_obj_response_t*);
 
 /* request parameters passed to lopgl_load_image() */
 typedef struct lopgl_image_request_t {
@@ -40,6 +81,7 @@ typedef struct lopgl_obj_request_t {
     const char* path;                       /* filesystem path or HTTP URL (required) */
     void* buffer_ptr;                       /* buffer pointer where data will be loaded into */
     uint32_t buffer_size;                   /* buffer size in number of bytes */
+    const void* user_data_ptr;              /* pointer to a POD user-data block which will be memcpy'd(!) (optional) */
     lopgl_obj_request_callback_t callback;  
     lopgl_fail_callback_t fail_callback;    /* response callback function pointer (required) */
     uint32_t _end_canary;
@@ -65,6 +107,14 @@ void lopgl_setup();
 void lopgl_update();
 
 void lopgl_shutdown();
+
+lopgl_orbital_cam_desc_t lopgl_get_orbital_cam_desc();
+
+lopgl_fp_cam_desc_t lopgl_get_fp_cam_desc();
+
+void lopgl_set_orbital_cam(lopgl_orbital_cam_desc_t* desc);
+
+void lopgl_set_fp_cam(lopgl_fp_cam_desc_t* desc);
 
 hmm_mat4 lopgl_view_matrix();
 
@@ -122,11 +172,9 @@ void lopgl_load_obj(const lopgl_obj_request_t* request);
 /*=== ORBITAL CAM ==================================================*/
 
 struct orbital_cam {
-    // camera attributes
+    // camera config
     hmm_vec3 target;
     hmm_vec3 up;
-    hmm_vec3 position;
-    hmm_vec3 world_up;
     hmm_vec2 polar;
     float distance;
     // camera limits
@@ -137,16 +185,14 @@ struct orbital_cam {
     // control options
     float rotate_speed;
 	float zoom_speed;
-    // control state
     bool enable_rotate;
+    // internal state
+    hmm_vec3 position;
 };
 
-struct orbital_cam create_orbital_camera(hmm_vec3 target, hmm_vec3 up, float pitch, float heading, float distance);
-
+static void update_orbital_cam_vectors(struct orbital_cam* camera);
 hmm_mat4 view_matrix_orbital(struct orbital_cam* camera);
-
 void handle_input_orbital(struct orbital_cam* camera, const sapp_event* e, hmm_vec2 mouse_offset);
-
 const char* help_orbital();
 
 /*=== FP CAM =======================================================*/
@@ -154,13 +200,10 @@ const char* help_orbital();
 struct fp_cam {
     // camera attributes
     hmm_vec3 position;
-    hmm_vec3 front;
-    hmm_vec3 up;
-    hmm_vec3 right;
     hmm_vec3 world_up;
-    float zoom;
     float yaw;
     float pitch;
+    float zoom;
     // limits
     float min_pitch;
 	float max_pitch;
@@ -176,17 +219,17 @@ struct fp_cam {
     bool move_backward;
     bool move_left;
     bool move_right;
+    // internal state
+    hmm_vec3 front;
+    hmm_vec3 up;
+    hmm_vec3 right;
 };
 
-struct fp_cam create_fp_camera(hmm_vec3 position, hmm_vec3 up, float yaw, float pitch);
-
+static void update_fp_cam_vectors(struct fp_cam* camera);
 // Returns the view matrix calculated using Euler Angles and the LookAt Matrix
 hmm_mat4 view_matrix_fp(struct fp_cam* camera);
-
 void handle_input_fp(struct fp_cam* camera, const sapp_event* e, hmm_vec2 mouse_offset);
-
 void update_fp_camera(struct fp_cam* camera, float delta_time);
-
 const char* help_fp();
 
 /*=== APP ==========================================================*/
@@ -214,6 +257,7 @@ typedef struct {
     uint64_t frame_time;
     _cubemap_request_t cubemap_req;
 } lopgl_state_t;
+
 static lopgl_state_t _lopgl;
 
 void lopgl_setup() {
@@ -242,8 +286,35 @@ void lopgl_setup() {
     /* flip images vertically after loading */
     // stbi_set_flip_vertically_on_load(true);  
 
-    _lopgl.orbital_cam = create_orbital_camera(HMM_Vec3(0.0f, 0.0f,  0.0f), HMM_Vec3(0.0f, 1.0f,  0.0f), 0.0f, 0.0f, 6.0f);
-    _lopgl.fp_cam = create_fp_camera(HMM_Vec3(0.0f, 0.0f,  5.0f), HMM_Vec3(0.0f, 1.0f,  0.0f), -90.f, 0.0f);
+    lopgl_set_orbital_cam(&(lopgl_orbital_cam_desc_t) {
+        .target = HMM_Vec3(0.0f, 0.0f,  0.0f),
+        .up = HMM_Vec3(0.0f, 1.0f,  0.0f),
+        .pitch = 0.f,
+        .heading = 0.f,
+        .distance = 6.f,
+        .zoom_speed = .5f,
+        .rotate_speed = 1.f,
+        .min_dist = 1.f,
+        .max_dist = 10.f,
+        .min_pitch = -89.f,
+        .max_pitch = 89.f
+    });
+
+    lopgl_set_fp_cam(&(lopgl_fp_cam_desc_t) {
+        .position = HMM_Vec3(0.0f, 0.0f,  6.0f),
+        .world_up = HMM_Vec3(0.0f, 1.0f,  0.0f),
+        .yaw = -90.f,
+        .pitch = 0.f,
+        .zoom = 45.f,
+        .movement_speed = 0.005f,
+        .aim_speed = 1.f,
+        .zoom_speed = .1f,
+        .min_pitch = -89.f,
+        .max_pitch = 89.f,
+        .min_zoom = 1.f,
+        .max_zoom = 45.f
+    });
+
     _lopgl.fp_enabled = false;
     _lopgl.first_mouse = true;
     _lopgl.show_help = false;
@@ -262,6 +333,85 @@ void lopgl_update() {
 
 void lopgl_shutdown() {
     sg_shutdown();
+}
+
+lopgl_orbital_cam_desc_t lopgl_get_orbital_cam_desc() {
+    return (lopgl_orbital_cam_desc_t) {
+        .target = _lopgl.orbital_cam.target,
+        .up = _lopgl.orbital_cam.up,
+        .pitch = _lopgl.orbital_cam.polar.X,
+        .heading = _lopgl.orbital_cam.polar.Y,
+        .distance = _lopgl.orbital_cam.distance,
+        .zoom_speed = _lopgl.orbital_cam.zoom_speed,
+        .rotate_speed = _lopgl.orbital_cam.rotate_speed,
+        .min_dist = _lopgl.orbital_cam.min_dist,
+        .max_dist = _lopgl.orbital_cam.max_dist,
+        .min_pitch = _lopgl.orbital_cam.min_pitch,
+        .max_pitch = _lopgl.orbital_cam.max_pitch
+    };
+}
+
+lopgl_fp_cam_desc_t lopgl_get_fp_cam_desc() {
+    return (lopgl_fp_cam_desc_t) {
+        .position = _lopgl.fp_cam.position,
+        .world_up = _lopgl.fp_cam.world_up,
+        .yaw = _lopgl.fp_cam.yaw,
+        .pitch = _lopgl.fp_cam.pitch,
+        .zoom = _lopgl.fp_cam.zoom,
+        .movement_speed = _lopgl.fp_cam.movement_speed,
+        .aim_speed = _lopgl.fp_cam.aim_speed,
+        .zoom_speed = _lopgl.fp_cam.zoom_speed,
+        .min_pitch = _lopgl.fp_cam.min_pitch,
+        .max_pitch = _lopgl.fp_cam.max_pitch,
+        .min_zoom = _lopgl.fp_cam.min_zoom,
+        .max_zoom = _lopgl.fp_cam.max_zoom
+    };
+}
+
+void lopgl_set_orbital_cam(lopgl_orbital_cam_desc_t* desc) {
+    // camera attributes
+    _lopgl.orbital_cam.target = desc->target;
+    _lopgl.orbital_cam.up = desc->up;
+    _lopgl.orbital_cam.polar = HMM_Vec2(desc->pitch, desc->heading);
+    _lopgl.orbital_cam.distance = desc->distance;
+    // limits
+    _lopgl.orbital_cam.min_pitch = desc->min_pitch;
+	_lopgl.orbital_cam.max_pitch = desc->max_pitch;
+	_lopgl.orbital_cam.min_dist = desc->min_dist;
+	_lopgl.orbital_cam.max_dist = desc->max_dist;
+    // control options
+    _lopgl.orbital_cam.rotate_speed = desc->rotate_speed;
+    _lopgl.orbital_cam.zoom_speed = desc->zoom_speed;
+    // control state
+    _lopgl.orbital_cam.enable_rotate = false;
+
+    update_orbital_cam_vectors(&_lopgl.orbital_cam);
+}
+
+void lopgl_set_fp_cam(lopgl_fp_cam_desc_t* desc) {
+    // camera attributes
+    _lopgl.fp_cam.position = desc->position;
+    _lopgl.fp_cam.world_up = desc->world_up;
+    _lopgl.fp_cam.yaw = desc->yaw;
+    _lopgl.fp_cam.pitch = desc->pitch;
+    _lopgl.fp_cam.zoom = desc->zoom;
+    // limits
+    _lopgl.fp_cam.min_pitch = desc->min_pitch;
+	_lopgl.fp_cam.max_pitch = desc->max_pitch;
+	_lopgl.fp_cam.min_zoom = desc->min_zoom;
+	_lopgl.fp_cam.max_zoom = desc->max_zoom;
+    // control options
+    _lopgl.fp_cam.movement_speed = desc->movement_speed;
+    _lopgl.fp_cam.aim_speed = desc->aim_speed;
+    _lopgl.fp_cam.zoom_speed = desc->zoom_speed;
+    // control state
+    _lopgl.fp_cam.enable_aim = false;
+    _lopgl.fp_cam.move_forward = false;
+    _lopgl.fp_cam.move_backward = false;
+    _lopgl.fp_cam.move_left = false;
+    _lopgl.fp_cam.move_right = false;
+
+    update_fp_cam_vectors(&_lopgl.fp_cam);
 }
 
 hmm_mat4 lopgl_view_matrix() {
@@ -334,6 +484,10 @@ void lopgl_handle_input(const sapp_event* e) {
     }
 }
 
+bool lopgl_ui_visible() {
+    return !_lopgl.hide_ui;
+}
+
 void lopgl_render_help() {
     if (_lopgl.hide_ui) {
         return;
@@ -350,18 +504,9 @@ void lopgl_render_help() {
     else {
         sdtx_color4b(0x00, 0xff, 0x00, 0xaf);
         sdtx_puts(  "Hide help:\t'H'\n\n");
-
         sdtx_printf("Frame Time:\t%.3f\n\n", stm_ms(_lopgl.frame_time));
-
-        if (_lopgl.fp_enabled) {
-            sdtx_puts(  "Orbital Cam\t[ ]\n"
-                        "FP Cam\t\t[*]\n\n");
-        }
-        else {
-            sdtx_puts(  "Orbital Cam\t[*]\n"
-                        "FP Cam\t\t[ ]\n\n");
-        }
-
+        sdtx_printf("Orbital Cam\t[%c]\n", _lopgl.fp_enabled ? ' ': '*');
+        sdtx_printf("FP Cam\t\t[%c]\n\n", _lopgl.fp_enabled ? '*' : ' ');
         sdtx_puts("Switch Cam:\t'C'\n\n");
 
         if (_lopgl.fp_enabled) {
@@ -449,6 +594,7 @@ typedef struct {
     lopgl_fail_callback_t fail_callback;
     void* buffer_ptr;
     uint32_t buffer_size;
+    void* user_data_ptr;
 } lopgl_obj_request_data;
 
 static void mtl_fetch_callback(const sfetch_response_t* response) {
@@ -456,7 +602,10 @@ static void mtl_fetch_callback(const sfetch_response_t* response) {
 
     if (response->fetched) {
         fast_obj_mtllib_read(req_data.mesh, response->buffer_ptr, response->fetched_size);
-        req_data.callback(req_data.mesh);
+        req_data.callback(&(lopgl_obj_response_t){
+            .mesh = req_data.mesh,
+            .user_data_ptr = req_data.user_data_ptr
+        });
     }
     else if (response->failed) {
         req_data.fail_callback();
@@ -514,7 +663,8 @@ void lopgl_load_obj(const lopgl_obj_request_t* request) {
         .callback = request->callback,
         .fail_callback = request->fail_callback,
         .buffer_ptr = request->buffer_ptr,
-        .buffer_size = request->buffer_size
+        .buffer_size = request->buffer_size,
+        .user_data_ptr = request->user_data_ptr
     };
 
     sfetch_send(&(sfetch_request_t){
@@ -645,15 +795,7 @@ void lopgl_load_cubemap(lopgl_cubemap_request_t* request) {
 
 /*=== ORBITAL CAM IMPLEMENTATION ==================================================*/
 
-// Default camera values
-static const float MIN_PITCH_ORB = -89;
-static const float MAX_PITCH_ORB = 89;
-static const float MIN_DISTANCE = 1;
-static const float MAX_DISTANCE = 10;
-static const float ROTATE_SPEED = 1.0f;
-static const float ZOOM_SPEED = 0.5f;
-
-static void update_camera_vectors(struct orbital_cam* camera) {
+static void update_orbital_cam_vectors(struct orbital_cam* camera) {
     float cos_p = cosf(HMM_ToRadians(camera->polar.X));
     float sin_p = sinf(HMM_ToRadians(camera->polar.X));
     float cos_h = cosf(HMM_ToRadians(camera->polar.Y));
@@ -663,29 +805,6 @@ static void update_camera_vectors(struct orbital_cam* camera) {
         camera->distance * -sin_p,
         camera->distance * cos_p * cos_h
     );
-}
-
-struct orbital_cam create_orbital_camera(hmm_vec3 target, hmm_vec3 up, float pitch, float heading, float distance) {
-    struct orbital_cam camera;
-    // camera attributes
-    camera.target = target;
-    camera.up = up;
-    camera.polar = HMM_Vec2(pitch, heading);
-    camera.distance = distance;
-    // limits
-    camera.min_pitch = MIN_PITCH_ORB;
-	camera.max_pitch = MAX_PITCH_ORB;
-	camera.min_dist = MIN_DISTANCE;
-	camera.max_dist = MAX_DISTANCE;
-    // control options
-    camera.rotate_speed = ROTATE_SPEED;
-    camera.zoom_speed = ZOOM_SPEED;
-    // control state
-    camera.enable_rotate = false;
-
-    update_camera_vectors(&camera);
-    
-    return camera;
 }
 
 hmm_mat4 view_matrix_orbital(struct orbital_cam* camera) {
@@ -774,7 +893,7 @@ void handle_input_orbital(struct orbital_cam* camera, const sapp_event* e, hmm_v
         }
     }
 
-    update_camera_vectors(camera);
+    update_orbital_cam_vectors(camera);
 }
 
 const char* help_orbital() {
@@ -784,16 +903,6 @@ const char* help_orbital() {
 
 /*=== FP CAM IMPLEMENTATION =======================================================*/
 
-// Default camera values
-static const float ZOOM             =  45.0f;
-static const float MIN_PITCH        = -89.0f;
-static const float MAX_PITCH        =  89.0f;
-static const float MIN_ZOOM         =  1.0f;
-static const float MAX_ZOOM         =  45.0f;
-static const float MOVEMENT_SPEED   =  0.005f;
-static const float AIM_SPEED        =  1.0f;
-static const float ZOOM_SPEED_FP    =  0.1f;
-
 // Defines several possible options for camera movement. Used as abstraction to stay away from window-system specific input methods
 enum camera_movement {
     CAM_MOV_FORWARD,
@@ -802,7 +911,7 @@ enum camera_movement {
     CAM_MOV_RIGHT
 };
 
-static void update_fp_camera_vectors(struct fp_cam* camera) {
+static void update_fp_cam_vectors(struct fp_cam* camera) {
     // Calculate the new Front vector
     hmm_vec3 front;
     front.X = cosf(HMM_ToRadians(camera->yaw)) * cosf(HMM_ToRadians(camera->pitch));
@@ -815,38 +924,9 @@ static void update_fp_camera_vectors(struct fp_cam* camera) {
     camera->up    = HMM_NormalizeVec3(HMM_Cross(camera->right, camera->front));
 }
 
-struct fp_cam create_fp_camera(hmm_vec3 position, hmm_vec3 up, float yaw, float pitch) {
-    struct fp_cam camera;
-    // camera attributes
-    camera.position = position;
-    camera.world_up = up;
-    camera.yaw = yaw;
-    camera.pitch = pitch;
-    camera.zoom = ZOOM;
-    // limits
-    camera.min_pitch = MIN_PITCH;
-	camera.max_pitch = MAX_PITCH;
-	camera.min_zoom = MIN_ZOOM;
-	camera.max_zoom = MAX_ZOOM;
-    // control options
-    camera.movement_speed = MOVEMENT_SPEED;
-    camera.aim_speed = AIM_SPEED;
-    camera.zoom_speed = ZOOM_SPEED_FP;
-    // control state
-    camera.enable_aim = false;
-    camera.move_forward = false;
-    camera.move_backward = false;
-    camera.move_left = false;
-    camera.move_right = false;
-
-    update_fp_camera_vectors(&camera);
-    
-    return camera;
-}
-
 hmm_mat4 view_matrix_fp(struct fp_cam* camera) {
-    hmm_vec3 direction = HMM_AddVec3(camera->position, camera->front);
-    return HMM_LookAt(camera->position, direction, camera->up);
+    hmm_vec3 target = HMM_AddVec3(camera->position, camera->front);
+    return HMM_LookAt(camera->position, target, camera->up);
 }
 
 void update_fp_camera(struct fp_cam* camera, float delta_time) {
@@ -875,7 +955,7 @@ static void aim_fp_camera(struct fp_cam* camera, hmm_vec2 mouse_offset) {
 
     camera->pitch = HMM_Clamp(camera->min_pitch, camera->pitch, camera->max_pitch);
 
-    update_fp_camera_vectors(camera);
+    update_fp_cam_vectors(camera);
 }
 
 static void zoom_fp_camera(struct fp_cam* camera, float yoffset) {

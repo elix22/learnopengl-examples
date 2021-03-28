@@ -20,7 +20,7 @@ static struct {
     sg_pipeline pip_skybox;
     sg_bindings bind_skybox;
     sg_pass_action pass_action;
-    float vertex_buffer[70000 * 6 * sizeof(float)];
+    float vertex_buffer[70000 * 3 * 6];
     uint8_t file_buffer[8 * 1024 * 1024];
     uint8_t cubemap_buffer[6 * 1024 * 1024];
 } state;
@@ -31,7 +31,8 @@ static void fail_callback() {
     };
 }
 
-static void load_obj_callback(fastObjMesh* mesh) {
+static void load_obj_callback(lopgl_obj_response_t* response) {
+    fastObjMesh* mesh = response->mesh;
     state.mesh.face_count = mesh->face_count;
 
     for (unsigned int i = 0; i < mesh->face_count * 3; ++i) {
